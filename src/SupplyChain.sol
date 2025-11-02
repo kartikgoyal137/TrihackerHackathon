@@ -10,7 +10,7 @@ event Created(address party, uint256 time);
 event Transferred(address party, uint256 time);
 event Recieved(address party, uint256 time);
 
-contract SupplyChain is AccessControl {
+contract SupplyChain is AccessControl, ERC721, ERC721URIStorage {
 
     error NotOwner();
 
@@ -36,14 +36,14 @@ contract SupplyChain is AccessControl {
         string ipfsHash;
     }
 
-    mapping(uint256 => Product) private Products;
-    mapping(uint256 => TransferLog[]) private History;
+    mapping(uint256 => Product) private products;
+    mapping(uint256 => TransferLog[]) private history;
 
-    constructor() ERC721(_NAME, _SYMBOL) {
+    constructor() ERC721("SupplyChainUnit", "SCU") {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }
 
-    function AddManufacturer(address account) public onlyRole(DEFAULT_ADMIN_ROLE) {
+    function addManufacturer(address account) public onlyRole(DEFAULT_ADMIN_ROLE) {
         _grantRole(MANUFACTURER_ROLE, account);
     }
 
@@ -51,40 +51,56 @@ contract SupplyChain is AccessControl {
         _revokeRole(MANUFACTURER_ROLE, account);
     }
 
-    function CreateProduct(uint256 _id, string memory _name, string memory _ipfsHash) public onlyRole(MANUFACTURER_ROLE) {
-        Products[_id] = Product({name : _name, ipfsHash: _ipfsHash});
+    function createProduct(uint256 _id, string memory _name, string memory _ipfsHash) public onlyRole(MANUFACTURER_ROLE) {
+        products[_id] = Product({name : _name, ipfsHash: _ipfsHash});
         _safeMint(msg.sender, _id);
         _setTokenURI(_id, _ipfsHash);
-        TransferLog memory log = TransferLog(msg.sender, block.timestamp, Action.Created, _ipfsHash);
-        History[_id].push(log);
+        TransferLog memory log = TransferLog(msg.sender, msg.sender, block.timestamp, Action.Created, _ipfsHash);
+        history[_id].push(log);
         
         emit Created(msg.sender, block.timestamp);
     }
 
-    function TransferOwnership(uint256 _id, address newOwner, string memory _ipfsHash) public {
+    function transferOwnership(uint256 _id, address newOwner, string memory _ipfsHash) public {
         transferFrom(msg.sender, newOwner, _id);
 
         TransferLog memory log = TransferLog(msg.sender, newOwner, block.timestamp, Action.InTransit, _ipfsHash);
-        History[_id].push(log);
+        history[_id].push(log);
 
         emit Transferred(msg.sender, block.timestamp);
     }
 
-    function VerifyRecieve(address _id, string memory _ipfsHash) public {
+    function verifyRecieve(uint256 _id, string memory _ipfsHash) public {
         if(msg.sender != ownerOf(_id)) revert NotOwner(); 
-        if(msg.sender != History[_id][History[_id].length-1].partyGet) revert NotOwner();
         TransferLog memory log = TransferLog(msg.sender, msg.sender, block.timestamp, Action.Recieved, _ipfsHash);
-        History[_id].push(log);
+        history[_id].push(log);
 
         emit Recieved(msg.sender, block.timestamp);
     }
 
-    function getProduct(uint256 _id) public view returns(Product) {
-        return Products[_id];
+    function getProduct(uint256 _id) public view returns(Product memory) {
+        return products[_id];
     }
 
-    function getHistory(uint256 _id) public view returns(TranferLog[]) {
-        return History[_id];
+    function getHistory(uint256 _id) public view returns(TransferLog[] memory) {
+        return history[_id];
+    }
+
+    function supportsInterface(bytes4 interfaceId) 
+    public 
+    view 
+    override(AccessControl, ERC721, ERC721URIStorage) 
+    returns (bool) 
+    {
+        return super.supportsInterface(interfaceId);
+    }
+    function tokenURI(uint256 tokenId) 
+    public 
+    view 
+    override(ERC721, ERC721URIStorage) 
+    returns (string memory) 
+    {
+        return super.tokenURI(tokenId);
     }
 
 }
