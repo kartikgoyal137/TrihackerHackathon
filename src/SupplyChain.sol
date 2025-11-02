@@ -72,6 +72,7 @@ contract SupplyChain is AccessControl, ERC721, ERC721URIStorage {
 
     function verifyRecieve(uint256 _id, string memory _ipfsHash) public {
         if(msg.sender != ownerOf(_id)) revert NotOwner(); 
+        if(msg.sender != history[_id][history[_id].length-1].partyGet) revert NotOwner();
         TransferLog memory log = TransferLog(msg.sender, msg.sender, block.timestamp, Action.Recieved, _ipfsHash);
         history[_id].push(log);
 
@@ -94,6 +95,7 @@ contract SupplyChain is AccessControl, ERC721, ERC721URIStorage {
     {
         return super.supportsInterface(interfaceId);
     }
+    
     function tokenURI(uint256 tokenId) 
     public 
     view 
