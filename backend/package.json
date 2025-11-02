@@ -1,7 +1,7 @@
 {
   "name": "trackchain-backend",
   "version": "1.0.0",
-  "description": "IPFS upload service for the TrackChain project",
+  "description": "S3-compatible upload service for the TrackChain project",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -11,7 +11,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@pinata/sdk": "^2.1.0",
+    "@aws-sdk/client-s3": "^3.504.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

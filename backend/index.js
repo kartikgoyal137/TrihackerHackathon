@@ -3,38 +3,99 @@ import "dotenv/config"; // Loads .env file
 import express from "express";
 import multer from "multer";
 import cors from "cors";
-import PinataSDK from "@pinata/sdk"; // Use default import
-import { Readable } from "stream"; // For creating streams from buffers
+// --- UPDATED S3 IMPORT ---
+// Use the official AWS S3 Client
+import { S3Client, PutObjectCommand, ListBucketsCommand } from "@aws-sdk/client-s3";
+// --- END UPDATE ---
 import crypto from "crypto"; // For generating random IDs
 
 // ----- Configuration -----
 const PORT = process.env.PORT || 5001;
-const PINATA_JWT_KEY = process.env.PINATA_JWT_KEY;
-const PINATA_GATEWAY = "https://gateway.pinata.cloud/ipfs/";
 
-if (!PINATA_JWT_KEY) {
-  console.warn("WARNING: PINATA_JWT_KEY is not set in .env file. Uploads will fail.");
+// --- UPDATED ENV & CLIENT ---
+// Switched to Filebase S3 Credentials
+const FILEBASE_KEY = process.env.FILEBASE_KEY ? process.env.FILEBASE_KEY.trim() : null;
+const FILEBASE_SECRET = process.env.FILEBASE_SECRET ? process.env.FILEBASE_SECRET.trim() : null;
+const FILEBASE_BUCKET_NAME = process.env.FILEBASE_BUCKET_NAME ? process.env.FILEBASE_BUCKET_NAME.trim() : null;
+
+// The Filebase S3-compatible API endpoint
+const FILEBASE_S3_ENDPOINT = "https://s3.filebase.com";
+// --- END UPDATE ---
+
+if (!FILEBASE_KEY || !FILEBASE_SECRET || !FILEBASE_BUCKET_NAME) {
+  console.warn("WARNING: FILEBASE_KEY, FILEBASE_SECRET, or FILEBASE_BUCKET_NAME is not set in .env file. Uploads will fail.");
 }
 
-const pinata = PINATA_JWT_KEY ? new PinataSDK({ pinataJwtKey: PINATA_JWT_KEY }) : null;
+// --- UPDATED CLIENT INITIALIZATION ---
+let s3Client = null;
+if (FILEBASE_KEY && FILEBASE_SECRET) {
+  s3Client = new S3Client({
+    credentials: {
+      accessKeyId: FILEBASE_KEY,
+      secretAccessKey: FILEBASE_SECRET,
+    },
+    region: "us-east-1", // Default region for Filebase
+    endpoint: FILEBASE_S3_ENDPOINT,
+    forcePathStyle: true, // Required for Filebase
+  });
+}
+// --- END UPDATE ---
+
+
+// --- UPDATED AUTHENTICATION TEST ---
+(async () => {
+  if (s3Client) {
+    try {
+      // Test credentials by listing buckets
+      await s3Client.send(new ListBucketsCommand({}));
+      console.log("Filebase S3 Authentication Test SUCCESSFUL");
+      console.log(`Ready to upload to bucket: ${FILEBASE_BUCKET_NAME}`);
+    } catch (error) {
+      console.error("--- FILEBASE S3 AUTHENTICATION TEST FAILED ---");
+      console.error("This is likely due to invalid Filebase credentials or bucket name.");
+      console.error("Please re-check your .env file.");
+      console.error("Error details:", error.message);
+      console.error("-------------------------------------------");
+    }
+  } else {
+    console.error("Filebase S3 client not initialized. Check .env file.");
+  }
+})();
+// --- END AUTHENTICATION TEST ---
+
 
 // ----- App & Middleware Setup -----
 const app = express();
 app.use(cors()); // Allow cross-origin requests
 app.use(express.json()); // Allow the server to parse JSON bodies
 
-// Configure Multer to handle multiple file uploads (up to 5) in memory
+// Configure Multer (no change)
 const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
-  limits: { files: 5, fileSize: 10 * 1024 * 1024 } // 5 files max, 10MB each
+  limits: { files: 5, fileSize: 10 * 1024 * 1024 }
 });
+
+// ----- Helper Function -----
+// Helper to upload a buffer to S3
+const uploadToS3 = async (bucket, key, body, contentType) => {
+  const command = new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    Body: body,
+    ContentType: contentType,
+  });
+  await s3Client.send(command);
+  // Return the public URL
+  return `https://${bucket}.s3.filebase.com/${key}`;
+};
+
 
 // ----- API Endpoints -----
 
 app.get("/", (req, res) => {
   res.json({
-    message: "TrackChain IPFS Service is running",
+    message: "TrackChain S3 Service is running (Filebase)",
     endpoints: [
       "POST /api/create-product-data",
       "POST /api/add-checkpoint-data",
@@ -45,94 +106,84 @@ app.get("/", (req, res) => {
 
 /**
  * [POST] /api/create-product-data
- * Receives multiple files and a wallet address (for Manufacturer).
- * 1. Generates a random Product ID.
- * 2. Uploads all files to IPFS.
- * 3. Creates a metadata.json with all data.
- * 4. Uploads metadata.json to IPFS.
- * 5. Returns the single metadataHash and the productId.
+ * (Logic updated for Filebase S3)
  */
 app.post("/api/create-product-data", upload.array('files', 5), async (req, res) => {
-  if (!pinata) return res.status(500).json({ error: "Pinata JWT Key not configured." });
+  if (!s3Client) return res.status(500).json({ error: "Filebase client not configured." });
 
   const files = req.files;
-  const producerAddress = req.body.address; // 'address' must match the key in your frontend form
+  const { address: producerAddress, name: productName, physicalAddress } = req.body;
 
   if (!files || files.length === 0) {
     return res.status(400).json({ error: "No files were uploaded." });
   }
-  if (!producerAddress) {
-    return res.status(400).json({ error: "Producer address is required." });
+  if (!producerAddress || !productName || !physicalAddress) {
+    return res.status(400).json({ error: "Address, name, and physical address are required." });
   }
   
-  console.log(`Processing ${files.length} files for address: ${producerAddress}`);
+  console.log(`Processing ${files.length} files for: ${productName}`);
 
   try {
-    // Step 1: Upload all images to IPFS in parallel
-    const uploadPromises = files.map((file) => {
-      const stream = Readable.from(file.buffer);
-      const options = {
-        pinataMetadata: {
-          name: file.originalname,
-        },
-      };
-      return pinata.pinFileToIPFS(stream, options);
+    // Step 1: Generate a random Product ID
+    const randomBytes = crypto.randomBytes(16);
+    const productIdBigInt = BigInt('0x' + randomBytes.toString('hex'));
+    const productId = productIdBigInt.toString(); // Send as a decimal string
+    const productPath = `products/${productId}`;
+
+    // Step 2: Upload all images to S3 in parallel
+    const uploadPromises = files.map((file, index) => {
+      const fileKey = `${productPath}/image-${index}-${file.originalname}`;
+      return uploadToS3(FILEBASE_BUCKET_NAME, fileKey, file.buffer, file.mimetype);
     });
 
-    const fileUploadResults = await Promise.all(uploadPromises);
-    const imageHashes = fileUploadResults.map(result => result.IpfsHash);
+    const imageUrls = await Promise.all(uploadPromises);
     
-    console.log("Image Hashes:", imageHashes);
-
-    // Step 2: Generate a random Product ID
-    const productId = crypto.randomBytes(4).toString('hex'); // e.g., "a1b2c3d4"
+    console.log("Image URLs:", imageUrls);
 
     // Step 3: Create the metadata.json object
     const metadata = {
       type: "product",
+      name: productName,
       productId: productId,
       producerAddress: producerAddress,
-      images: imageHashes,
+      physicalAddress: physicalAddress,
+      images: imageUrls, // Array of public URLs
       createdAt: new Date().toISOString()
     };
     
     console.log("Pinning Product Metadata:", metadata);
 
-    // Step 4: Upload the metadata.json to IPFS
-    const metadataUploadResult = await pinata.pinJSONToIPFS(metadata, {
-      pinataMetadata: {
-        name: `TrackChain Product - ${productId}`,
-      },
-    });
+    // Step 4: Upload the metadata.json to S3
+    const metadataKey = `${productPath}/metadata.json`;
+    const metadataUrl = await uploadToS3(
+      FILEBASE_BUCKET_NAME,
+      metadataKey,
+      Buffer.from(JSON.stringify(metadata)),
+      "application/json"
+    );
 
-    const metadataHash = metadataUploadResult.IpfsHash;
 
-    // Step 5: Return the new ID and the single metadata hash
+    // Step 5: Return the new ID and the *public URL* of the metadata
     res.status(200).json({
       productId: productId,
-      metadataHash: metadataHash
+      metadataHash: metadataUrl // Return the public URL as the "hash"
     });
 
   } catch (error) {
     console.error("Error in /create-product-data:", error.message);
-    res.status(500).json({ error: "File upload process failed." });
+    res.status(500).json({ error: error.message || "File upload process failed." });
   }
 });
 
 /**
  * [POST] /api/add-checkpoint-data
- * Receives a single file, an actor address, and a product ID (for Intermediary).
- * 1. Uploads the single file to IPFS.
- * 2. Creates a metadata.json with the image hash, actor, and product ID.
- * 3. Uploads metadata.json to IPFS.
- * 4. Returns the single metadataHash.
+ * (Logic updated for Filebase S3)
  */
 app.post("/api/add-checkpoint-data", upload.single('file'), async (req, res) => {
-  if (!pinata) return res.status(500).json({ error: "Pinata JWT Key not configured." });
+  if (!s3Client) return res.status(500).json({ error: "Filebase client not configured." });
 
   const file = req.file;
-  const actorAddress = req.body.address;
-  const productId = req.body.productId;
+  const { address: actorAddress, productId } = req.body;
 
   if (!file) {
     return res.status(400).json({ error: "A file is required." });
@@ -141,44 +192,39 @@ app.post("/api/add-checkpoint-data", upload.single('file'), async (req, res) => 
     return res.status(400).json({ error: "Actor address and Product ID are required." });
   }
 
-  console.log(`Processing checkpoint for Product ID: ${productId} by Actor: ${actorAddress}`);
+  console.log(`Processing checkpoint for Product ID: ${productId}`);
 
   try {
-    // Step 1: Upload the single image to IPFS
-    const stream = Readable.from(file.buffer);
-    const options = {
-      pinataMetadata: {
-        name: `Checkpoint - ${productId} - ${file.originalname}`,
-      },
-    };
-    const fileUploadResult = await pinata.pinFileToIPFS(stream, options);
-    const imageHash = fileUploadResult.IpfsHash;
+    // Step 1: Upload the single image to S3
+    const checkpointPath = `checkpoints/${productId}`;
+    const fileKey = `${checkpointPath}/actor-${actorAddress}-${Date.now()}-${file.originalname}`;
+    const imageUrl = await uploadToS3(FILEBASE_BUCKET_NAME, fileKey, file.buffer, file.mimetype);
 
-    console.log("Checkpoint Image Hash:", imageHash);
+    console.log("Checkpoint Image URL:", imageUrl);
 
     // Step 2: Create the metadata.json object
     const metadata = {
       type: "checkpoint",
       productId: productId,
       actorAddress: actorAddress,
-      image: imageHash,
+      image: imageUrl, // Public URL
       timestamp: new Date().toISOString()
     };
 
     console.log("Pinning Checkpoint Metadata:", metadata);
 
-    // Step 3: Upload the metadata.json to IPFS
-    const metadataUploadResult = await pinata.pinJSONToIPFS(metadata, {
-      pinataMetadata: {
-        name: `TrackChain Checkpoint - ${productId}`,
-      },
-    });
+    // Step 3: Upload the metadata.json to S3
+    const metadataKey = `${checkpointPath}/metadata-${Date.now()}.json`;
+    const metadataUrl = await uploadToS3(
+      FILEBASE_BUCKET_NAME,
+      metadataKey,
+      Buffer.from(JSON.stringify(metadata)),
+      "application/json"
+    );
 
-    const metadataHash = metadataUploadResult.IpfsHash;
-
-    // Step 4: Return the single metadata hash
+    // Step 4: Return the single metadata hash (URL)
     res.status(200).json({
-      metadataHash: metadataHash
+      metadataHash: metadataUrl
     });
 
   } catch (error) {
@@ -189,28 +235,35 @@ app.post("/api/add-checkpoint-data", upload.single('file'), async (req, res) => 
 
 
 /**
- * Receives an array of IPFS hashes.
- * 1. Fetches the JSON data for each hash from the Pinata gateway.
- * 2. Returns an array of the fetched JSON objects.
+ * [POST] /api/fetch-metadata-batch
+ * (Logic updated to fetch from public S3 URLs)
  */
 app.post("/api/fetch-metadata-batch", async (req, res) => {
-  const { hashes } = req.body;
+  // The 'hashes' are now expected to be an array of objects, each with a 'hash' field (URL)
+  const { hashes: items } = req.body;
 
-  if (!hashes || !Array.isArray(hashes) || hashes.length === 0) {
-    return res.status(400).json({ error: "An array of 'hashes' is required." });
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: "An array of 'hashes' (structs) is required." });
   }
 
-  console.log(`Batch fetching ${hashes.length} hashes...`);
+  console.log(`Batch fetching ${items.length} URLs...`);
 
   try {
-    const fetchPromises = hashes.map(async (hash) => {
-      const url = `${PINATA_GATEWAY}${hash}`;
-      const response = await fetch(url);
-      if (!response.ok) {
-        console.error(`Failed to fetch hash: ${hash}, status: ${response.status}`);
-        return { hash, error: `Failed to fetch (status ${response.status})` };
+    const fetchPromises = items.map(async (item) => {
+      const url = item.ipfsHash; // Extract the URL from the 'hash' field
+
+      if (!url || typeof url !== 'string') {
+        console.error(`Invalid item in batch fetch:`, item);
+        return { hash: null, status: 'error', reason: 'Invalid item structure, missing hash field.' };
       }
-      return await response.json();
+
+      const response = await fetch(url); 
+      if (!response.ok) {
+        console.error(`Failed to fetch URL: ${url}, status: ${response.status}`);
+        return { hash: url, status: 'error', reason: `Failed to fetch (status ${response.status})` };
+      }
+      const data = await response.json();
+      return { ...data, originalHash: url };
     });
 
     const results = await Promise.all(fetchPromises);
@@ -224,9 +277,8 @@ app.post("/api/fetch-metadata-batch", async (req, res) => {
   }
 });
 
-
 // ----- Start Server -----
 app.listen(PORT, () => {
-  console.log(`TrackChain IPFS Service running on http://localhost:${PORT}`);
+  console.log(`TrackChain S3 Service (Filebase) running on http://localhost:${PORT}`);
 });
 
