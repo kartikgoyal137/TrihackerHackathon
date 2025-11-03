@@ -5,7 +5,7 @@ import multer from "multer";
 import cors from "cors";
 // --- UPDATED S3 IMPORT ---
 // Use the official AWS S3 Client
-import { S3Client, PutObjectCommand, ListBucketsCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, ListBucketsCommand , HeadObjectCommand} from "@aws-sdk/client-s3";
 // --- END UPDATE ---
 import crypto from "crypto"; // For generating random IDs
 
@@ -79,15 +79,34 @@ const upload = multer({
 // ----- Helper Function -----
 // Helper to upload a buffer to S3
 const uploadToS3 = async (bucket, key, body, contentType) => {
-  const command = new PutObjectCommand({
+  // Step 1: Upload the file
+  const putCommand = new PutObjectCommand({
     Bucket: bucket,
     Key: key,
     Body: body,
     ContentType: contentType,
+    ACL: 'public-read' // Make file publicly readable
   });
-  await s3Client.send(command);
-  // Return the public URL
-  return `https://${bucket}.s3.filebase.com/${key}`;
+  await s3Client.send(putCommand);
+
+  // Step 2: Immediately fetch the object's metadata
+  const headCommand = new HeadObjectCommand({
+    Bucket: bucket,
+    Key: key,
+  });
+  const response = await s3Client.send(headCommand);
+
+  // Step 3: Extract the IPFS CID from the metadata
+  // Filebase stores it in 'x-amz-meta-cid', which the client maps to 'metadata.cid'
+  const ipfsCid = response.Metadata?.cid;
+
+  if (!ipfsCid) {
+    throw new Error(`Could not get IPFS CID for file: ${key}`);
+  }
+  console.log(ipfsCid)
+  
+  // Step 4: Return the standard Filebase IPFS Gateway URL
+  return `https://ipfs.filebase.io/ipfs/${ipfsCid}`;
 };
 
 
@@ -161,7 +180,8 @@ app.post("/api/create-product-data", upload.array('files', 5), async (req, res) 
       Buffer.from(JSON.stringify(metadata)),
       "application/json"
     );
-
+    console.log(metadataUrl)
+    
 
     // Step 5: Return the new ID and the *public URL* of the metadata
     res.status(200).json({
